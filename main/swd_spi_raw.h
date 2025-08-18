@@ -152,13 +152,17 @@ extern "C" {
 esp_err_t swd_spi_init(gpio_num_t swclk, gpio_num_t swdio, uint32_t freq_hz, spi_host_device_t host);
 esp_err_t swd_spi_wait_till_ready(int32_t timeout_cycles);
 void swd_spi_send_cycles(uint32_t clk_cycles, uint32_t swclk_level);
+void swd_spi_send_trn(uint8_t trn_cycles);
+void swd_spi_read_trn(uint8_t trn_cycles);
 esp_err_t IRAM_ATTR swd_spi_send_bits(uint8_t *bits, size_t bit_len);
 esp_err_t IRAM_ATTR swd_spi_recv_bits(uint8_t *bits, size_t bit_len);
-esp_err_t IRAM_ATTR swd_spi_send_header(uint8_t header_data, uint8_t *ack, uint8_t trn_after_ack);
+esp_err_t IRAM_ATTR swd_spi_send_header(uint8_t header_data, uint8_t *ack);
 esp_err_t IRAM_ATTR swd_spi_reset();
 esp_err_t IRAM_ATTR swd_spi_switch();
 uint8_t IRAM_ATTR swd_spi_transfer_retry(uint32_t req, uint32_t *data);
 uint8_t IRAM_ATTR swd_spi_read_dp(uint8_t reg, uint32_t *out_word);
+uint8_t IRAM_ATTR swd_spi_write_dp(uint8_t reg, uint32_t val);
+esp_err_t IRAM_ATTR swd_spi_power_up();
 esp_err_t IRAM_ATTR swd_spi_read_idcode(uint32_t *idcode);
 esp_err_t IRAM_ATTR swd_spi_read_data(uint32_t *data_out, uint8_t *parity_out);
 esp_err_t IRAM_ATTR swd_spi_write_data(uint32_t data, uint8_t parity);

@@ -53,12 +53,22 @@ esp_err_t swd_spi_init(gpio_num_t swclk, gpio_num_t swdio, uint32_t freq_hz, spi
     spi_bus_config.max_transfer_sz = 0;
     // spi_bus_config.flags = SPICOMMON_BUSFLAG_IOMUX_PINS;
 
+    gpio_config_t io_conf;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << swdio) | (1ULL << swclk);
+    io_conf.pull_down_en = 0;
+    io_conf.pull_up_en = 1;
+    gpio_config(&io_conf);
+
+    gpio_set_drive_capability(swdio, GPIO_DRIVE_CAP_0);
+    gpio_set_drive_capability(swclk, GPIO_DRIVE_CAP_0);
+
     esp_err_t ret = spi_bus_initialize(host, &spi_bus_config, 0);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI Bus init fail");
         return ret;
     }
-
 
     spi_device_interface_config_t spi_dev_inf_config = {};
     spi_dev_inf_config.command_bits        = 0;
@@ -291,17 +301,27 @@ esp_err_t swd_spi_switch()
 
 static uint8_t swd_spi_transfer(uint32_t req, uint32_t *data)
 {
-    const uint8_t const_start_stop_bits = 0b10000001U; /* Start Bit  & Stop Bit & Park Bit is fixed. */
-    uint8_t req_byte = const_start_stop_bits | (((uint8_t)(req & 0xFU)) << 1U) | (calc_parity_u8(req & 0xFU) << 5U);
-
+    uint8_t req_byte = 0x81 | ((req & 0x0f) << 1) | (calc_parity_u8(req & 0x0f) << 5);
     uint8_t ack = 0;
-    swd_spi_send_header(req_byte, &ack, 0);
+    swd_spi_send_header(req_byte, &ack);
 
-    uint32_t data_read = 0;
-    uint8_t parity_read = 0;
-    swd_spi_read_data(&data_read, &parity_read);
-
-    ESP_LOGI(TAG, "Ack: 0x%x, data read: 0x%x, parity read: 0x%x", ack, data_read, parity_read);
+    if (ack == 0x01) { // OK
+        if (req & SWD_REG_R) { // READ
+            uint32_t data_read = 0;
+            uint8_t parity_read = 0;
+            swd_spi_read_data(&data_read, &parity_read);
+            if (data != NULL) {
+                *data = data_read;
+            }
+        } else { // WRITE
+            uint8_t parity = calc_parity_u32(*data);
+            swd_spi_write_data(*data, parity);
+        }
+    } else if (ack == 0x02) { // WAIT
+        ESP_LOGW(TAG, "SWD WAIT received");
+    } else { // FAULT
+        ESP_LOGE(TAG, "SWD FAULT received: 0x%x", ack);
+    }
 
     return ack;
 }
@@ -331,90 +351,64 @@ uint8_t swd_spi_transfer_retry(uint32_t req, uint32_t *data)
     return 0;
 }
 
-esp_err_t swd_spi_send_header(uint8_t header_data, uint8_t *ack, uint8_t trn_after_ack)
+void swd_spi_send_trn(uint8_t trn_cycles)
 {
-    uint32_t data_buf = 0;
+    gpio_set_direction(GPIO_NUM_2, GPIO_MODE_OUTPUT);
     spi_dev->user.usr_dummy = 0;
     spi_dev->user.usr_command = 0;
     spi_dev->user.usr_mosi = 1;
-
-    spi_dev->ms_dlen.ms_data_bitlen = 7; // 8 bits
-
-    spi_dev->user.usr_miso = 1;
-    spi_dev->user.sio = 1;
-//    spi_dev->misc.ck_idle_edge = 0;
-//    spi_dev->user.ck_out_edge = 0;
-
-    spi_dev->ms_dlen.ms_data_bitlen = 1 + 3 + trn_after_ack - 1; // 1 bit Trn(Before ACK) + 3bits ACK + TrnAfterACK  - 1(prescribed)
-    spi_dev->data_buf[0] = (header_data << 0) | (0U << 8) | (0U << 16) | (0U << 24);
+    spi_dev->user.usr_miso = 0;
+    spi_dev->ms_dlen.ms_data_bitlen = trn_cycles - 1;
+    spi_dev->data_buf[0] = 0;
     spi_dev->cmd.update = 1;
     while (spi_dev->cmd.update);
-
     spi_dev->cmd.usr = 1;
-    if (swd_spi_wait_till_ready(1000) != ESP_OK) {
-        ESP_LOGE(TAG, "Read bit timeout");
-        return ESP_ERR_TIMEOUT;
-    }
+    swd_spi_wait_till_ready(1000);
+}
 
+void swd_spi_read_trn(uint8_t trn_cycles)
+{
+    gpio_set_direction(GPIO_NUM_2, GPIO_MODE_INPUT);
+    spi_dev->user.usr_dummy = 0;
+    spi_dev->user.usr_command = 0;
+    spi_dev->user.usr_mosi = 0;
+    spi_dev->user.usr_miso = 1;
+    spi_dev->ms_dlen.ms_data_bitlen = trn_cycles - 1;
+    spi_dev->cmd.update = 1;
+    while (spi_dev->cmd.update);
+    spi_dev->cmd.usr = 1;
+    swd_spi_wait_till_ready(1000);
+}
 
-    data_buf = spi_dev->data_buf[0];
-    *ack = (data_buf >> 1) & 0b111;
-
+esp_err_t swd_spi_send_header(uint8_t header_data, uint8_t *ack)
+{
+    uint8_t data_buf[1] = {0};
+    swd_spi_send_bits(&header_data, 8);
+    swd_spi_read_trn(1);
+    swd_spi_recv_bits(data_buf, 3);
+    *ack = data_buf[0] & 0b111;
     return ESP_OK;
 }
 
 esp_err_t swd_spi_read_data(uint32_t *data_out, uint8_t *parity_out)
 {
-    volatile uint64_t data_buf;
-    uint32_t *data_u32_p = (uint32_t *)&data_buf;
-
-    spi_dev->user.usr_dummy = 0;
-    spi_dev->user.usr_command = 0;
-    spi_dev->user.usr_mosi = 0;
-    spi_dev->user.usr_miso = 1;
-
-    // 1 bit Trn(End) + 3bits ACK + 32bis data + 1bit parity - 1(prescribed)
-    spi_dev->ms_dlen.ms_data_bitlen = 1 + 32 + 1 - 1;
-
-    spi_dev->cmd.update = 1;
-    while (spi_dev->cmd.update);
-
-    spi_dev->cmd.usr = 1;
-    if (swd_spi_wait_till_ready(10000) != ESP_OK) {
-        ESP_LOGE(TAG, "Read data timeout");
-        return ESP_ERR_TIMEOUT;
-    }
-
-    data_u32_p[0] = spi_dev->data_buf[0];
-    data_u32_p[1] = spi_dev->data_buf[1];
-
-    *data_out = (data_buf >> 0U) & 0xFFFFFFFFU;  // 32bits Response Data
-    *parity_out = (data_buf >> (0U + 32U)) & 1U; // 3bits ACK + 32bis data
-
+    uint8_t data_buf[5] = {0};
+    swd_spi_recv_bits(data_buf, 33);
+    *data_out = (data_buf[0] << 0) | (data_buf[1] << 8) | (data_buf[2] << 16) | (data_buf[3] << 24);
+    *parity_out = data_buf[4] & 0x01;
+    swd_spi_send_trn(1);
     return ESP_OK;
 }
 
 esp_err_t swd_spi_write_data(uint32_t data, uint8_t parity)
 {
-    spi_dev->user.usr_dummy = 0;
-    spi_dev->user.usr_command = 0;
-    spi_dev->user.usr_mosi = 1;
-    spi_dev->user.usr_miso = 0;
-
-    // 1 bit Trn(End) + 3bits ACK + 32bis data + 1bit parity - 1(prescribed)
-    spi_dev->ms_dlen.ms_data_bitlen = 32 + 1 - 1;
-    spi_dev->data_buf[0] = data;
-    spi_dev->data_buf[1] = parity;
-
-    spi_dev->cmd.update = 1;
-    while (spi_dev->cmd.update);
-
-
-    spi_dev->cmd.usr = 1;
-    if (swd_spi_wait_till_ready(10000) != ESP_OK) {
-        ESP_LOGE(TAG, "Write data timeout");
-        return ESP_ERR_TIMEOUT;
-    }
-
+    uint8_t data_buf[5] = {0};
+    data_buf[0] = (data >> 0) & 0xff;
+    data_buf[1] = (data >> 8) & 0xff;
+    data_buf[2] = (data >> 16) & 0xff;
+    data_buf[3] = (data >> 24) & 0xff;
+    data_buf[4] = parity;
+    swd_spi_send_bits(data_buf, 33);
+    swd_spi_send_trn(1);
     return ESP_OK;
 }

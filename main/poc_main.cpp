@@ -14,7 +14,9 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(swd_spi_reset());
 
     uint32_t idcode = 0;
-    ESP_ERROR_CHECK(swd_spi_read_idcode(&idcode));
+    if (swd_spi_read_idcode(&idcode) != ESP_OK) {
+        ESP_LOGE("main", "Failed to read IDCODE");
+    }
     ESP_LOGI("main", "IDCODE = 0x%x", idcode);
 
     vTaskDelay(portMAX_DELAY);
