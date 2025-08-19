@@ -151,7 +151,6 @@ extern "C" {
 
 esp_err_t swd_spi_init(gpio_num_t swclk, gpio_num_t swdio, uint32_t freq_hz, spi_host_device_t host);
 esp_err_t swd_spi_wait_till_ready(int32_t timeout_cycles);
-void swd_spi_send_cycles(uint32_t clk_cycles, uint32_t swclk_level);
 void swd_spi_send_trn(uint8_t trn_cycles);
 void swd_spi_read_trn(uint8_t trn_cycles);
 esp_err_t IRAM_ATTR swd_spi_send_bits(uint8_t *bits, size_t bit_len);
