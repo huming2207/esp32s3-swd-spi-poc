@@ -129,6 +129,76 @@ esp_err_t swd_spi_init(gpio_num_t swclk, gpio_num_t swdio, uint32_t freq_hz, spi
     hal_ctx.hw = spi_dev;
     hal_ctx.dma_enabled = false;
 
+
+    // Not using DMA
+    spi_dev->user.usr_conf_nxt = 0;
+    spi_dev->slave.usr_conf = 0;
+    spi_dev->dma_conf.dma_rx_ena = 0;
+    spi_dev->dma_conf.dma_tx_ena = 0;
+
+    // Set to Master mode
+    spi_dev->slave.slave_mode = false;
+
+    // use all 64 bytes of the buffer
+    spi_dev->user.usr_mosi_highpart = false;
+    spi_dev->user.usr_miso_highpart = false;
+
+    // Disable cs pin
+    spi_dev->user.cs_setup = false;
+    spi_dev->user.cs_hold = false;
+
+    // Disable CS signal
+    spi_dev->misc.cs0_dis = 1;
+    spi_dev->misc.cs1_dis = 1;
+    spi_dev->misc.cs2_dis = 1;
+    spi_dev->misc.cs3_dis = 1;
+    spi_dev->misc.cs4_dis = 1;
+    spi_dev->misc.cs5_dis = 1;
+
+    // Duplex transmit
+    spi_dev->user.doutdin = false;  // half dulex
+
+    // Set data bit order
+    spi_dev->ctrl.wr_bit_order = 1;   // SWD -> LSB
+    spi_dev->ctrl.rd_bit_order = 1;   // SWD -> LSB
+
+    // Set dummy
+    spi_dev->user.usr_dummy = 0; // not use
+
+    // Set spi clk: 40Mhz 50% duty
+    // CLEAR_PERI_REG_MASK(PERIPHS_IO_MUX_CONF_U, SPI1_CLK_EQU_SYS_CLK);
+
+    // See TRM `SPI_CLOCK_REG`
+    spi_dev->clock.clk_equ_sysclk = false;
+    spi_dev->clock.clkdiv_pre = 0;
+    spi_dev->clock.clkcnt_n = 8 - 1;
+    spi_dev->clock.clkcnt_h = 8 / 2 - 1;
+    spi_dev->clock.clkcnt_l = 8 - 1;
+
+    // MISO delay setting
+    spi_dev->user.rsck_i_edge = true;
+    spi_dev->din_mode.din0_mode = 0;
+    spi_dev->din_mode.din1_mode = 0;
+    spi_dev->din_mode.din2_mode = 0;
+    spi_dev->din_mode.din3_mode = 0;
+    spi_dev->din_num.din0_num = 0;
+    spi_dev->din_num.din1_num = 0;
+    spi_dev->din_num.din2_num = 0;
+    spi_dev->din_num.din3_num = 0;
+
+    // Set the clock polarity and phase CPOL = 1, CPHA = 0
+    spi_dev->misc.ck_idle_edge = 1;  // HIGH while idle
+    spi_dev->user.ck_out_edge = 0;
+
+    // enable spi clock
+    spi_dev->clk_gate.clk_en = 1;
+    spi_dev->clk_gate.mst_clk_active = 1;
+    spi_dev->clk_gate.mst_clk_sel = 1;
+
+    // No command and addr for now
+    spi_dev->user.usr_command = 0;
+    spi_dev->user.usr_addr = 0;
+    
     return ret;
 }
 
@@ -241,8 +311,6 @@ esp_err_t swd_spi_recv_bits(uint8_t *bits, size_t bit_len)
     spi_dev->user.usr_command = 0;
     spi_dev->user.usr_mosi = 0;
     spi_dev->user.usr_miso = 1;
-//    spi_dev->misc.ck_idle_edge = 0;
-//    spi_dev->user.ck_out_edge = 0;
     spi_dev->user.sio = 1;
     spi_dev->ms_dlen.ms_data_bitlen = bit_len - 1;
     spi_dev->cmd.update = 1;
@@ -370,6 +438,7 @@ esp_err_t swd_spi_send_header(uint8_t header_data, uint8_t *ack)
     uint8_t data_buf[7] = {0};
     swd_spi_send_bits(&header_data, 8);
     swd_spi_recv_bits(data_buf, 4); // 1 turnaround + 3 bit ACK
+    ESP_LOGI(TAG, "Got ACK 0x%x", data_buf[0]);
     *ack = data_buf[0] & 0b111;
     return ESP_OK;
 }
@@ -378,7 +447,7 @@ esp_err_t swd_spi_read_data(uint32_t *data_out, uint8_t *parity_out)
 {
     uint8_t data_buf[5] = {0};
     swd_spi_recv_bits(data_buf, 34);
-    *data_out = (data_buf[0] << 0) | (data_buf[1] << 8) | (data_buf[2] << 16) | (data_buf[3] << 24);
+    *data_out = (data_buf[3] << 0) | (data_buf[2] << 8) | (data_buf[1] << 16) | (data_buf[0] << 24);
     *parity_out = data_buf[4] & 0x01;
 
     ESP_LOG_BUFFER_HEX(TAG, data_buf, 5);
